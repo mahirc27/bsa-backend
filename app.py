@@ -10,15 +10,15 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE = "tasks.db"
-PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
+PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")[cite: 4]
 EMAIL_RELAY_URL = os.environ.get("EMAIL_RELAY_URL")
 
-# Team email directory (case-insensitive lookup enabled)
+# Executive member email lookup registry[cite: 4]
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
-    # Add additional executive members here:
+    # Add your team members here:
     # "Name": "user@example.com",
 }
 
@@ -46,9 +46,9 @@ def init_db():
 init_db()
 
 def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
-    """Sends notification via Google Apps Script Web App without encoding corruption."""
+    """Sends clean ASCII/Latin-1 compatible task emails via Google Apps Script without emoji corruption."""
     if not EMAIL_RELAY_URL:
-        print("Skipping email: EMAIL_RELAY_URL is not configured in Render environment.", flush=True)
+        print("Skipping email: EMAIL_RELAY_URL is not set in Render environment.", flush=True)
         return
 
     recipient_email = EXEC_ROSTER.get(assignee_name.strip())
@@ -62,13 +62,13 @@ def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
         print(f"Skipping email: '{assignee_name}' is not registered in EXEC_ROSTER.", flush=True)
         return
 
-    deadline_text = f"Due Date: {deadline}\n" if deadline else ""
+    deadline_text = f"• Due Date: {deadline}\n" if deadline else ""
     email_body = f"""Hi {assignee_name},
 
 You have been assigned a new task on the BSA Task Tracker:
 
-📌 Task: {task_title}
-🏢 Department: {department}
+• Task: {task_title}
+• Department: {department}
 {deadline_text}
 Review and update your tasks here:
 https://mahirc27.github.io/bsa-task-tracker/
@@ -76,19 +76,17 @@ https://mahirc27.github.io/bsa-task-tracker/
 — BSA Executive Board
 """
 
-    # ensure_ascii=False forces raw UTF-8 output instead of \u surrogate escape pairs
     payload = json.dumps({
         "to": recipient_email,
-        "subject": f"📌 New Task Assigned: {task_title}",
+        "subject": f"[BSA Task] New Task Assigned: {task_title}",
         "body": email_body,
-    }, ensure_ascii=False).encode("utf-8")
+    }).encode("utf-8")
 
     try:
         req = urllib.request.Request(
             EMAIL_RELAY_URL.strip(),
             data=payload,
             headers={
-                # Explicit charset prevents Google from interpreting multibyte emoji characters as fallback question marks
                 "Content-Type": "application/json; charset=utf-8",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
@@ -101,7 +99,7 @@ https://mahirc27.github.io/bsa-task-tracker/
         print(f"Apps Script relay error: {e}", flush=True)
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
-    # Runs on a daemon background thread so task creation returns in <50ms without UI lag
+    # Runs on a daemon background thread so the HTTP request completes instantaneously[cite: 4]
     threading.Thread(
         target=_dispatch_relay_email,
         args=(assignee_name, task_title, department, deadline),
@@ -117,22 +115,22 @@ def health():
 # --- Task Endpoints ---
 @app.route("/tasks", methods=["GET"])
 def get_tasks():
-    incoming_pin = request.args.get("pin")
-    department = request.args.get("department")
+    incoming_pin = request.args.get("pin")[cite: 4]
+    department = request.args.get("department")[cite: 4]
 
     if incoming_pin is not None and incoming_pin.strip() != PRESIDENT_PIN.strip():
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}), 401[cite: 4]
 
     if not department or department == "All":
         if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
-            return jsonify({"error": "Unauthorized"}), 401
+            return jsonify({"error": "Unauthorized"}), 401[cite: 4]
 
     conn = get_db_connection()
     cursor = conn.cursor()
     if department and department != "All":
-        cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))
+        cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))[cite: 4]
     else:
-        cursor.execute("SELECT * FROM tasks")
+        cursor.execute("SELECT * FROM tasks")[cite: 4]
     rows = cursor.fetchall()
     conn.close()
 
@@ -146,59 +144,59 @@ def get_tasks():
             "deadline": row["deadline"],
         }
         for row in rows
-    ]
-    return jsonify(tasks), 200
+    ][cite: 2, 3, 4]
+    return jsonify(tasks), 200[cite: 4]
 
 @app.route("/tasks", methods=["POST"])
 def create_task():
     data = request.get_json() or {}
-    incoming_pin = data.get("pin")
+    incoming_pin = data.get("pin")[cite: 4]
 
     if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}), 401[cite: 4]
 
-    title = data.get("title")
-    assignee = data.get("assignee")
-    department = data.get("department")
-    deadline = data.get("deadline")
+    title = data.get("title")[cite: 4]
+    assignee = data.get("assignee")[cite: 4]
+    department = data.get("department")[cite: 4]
+    deadline = data.get("deadline")[cite: 4]
 
     if not title or not assignee or not department:
-        return jsonify({"error": "Missing required fields"}), 400
+        return jsonify({"error": "Missing required fields"}), 400[cite: 4]
 
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO tasks (title, assignee, department, status, deadline) VALUES (?, ?, ?, ?, ?)",
         (title.strip(), assignee.strip(), department.strip(), "Pending", deadline.strip() if deadline else None),
-    )
+    )[cite: 4]
     conn.commit()
     new_id = cursor.lastrowid
     conn.close()
 
-    send_task_notification(assignee, title, department, deadline)
-    return jsonify({"message": "Task created", "id": new_id}), 201
+    send_task_notification(assignee, title, department, deadline)[cite: 4]
+    return jsonify({"message": "Task created", "id": new_id}), 201[cite: 4]
 
 @app.route("/tasks/<int:task_id>", methods=["PATCH"])
 def update_task_status(task_id):
     data = request.get_json() or {}
-    status = data.get("status")
+    status = data.get("status")[cite: 4]
 
     if not status:
-        return jsonify({"error": "Status is required"}), 400
+        return jsonify({"error": "Status is required"}), 400[cite: 4]
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))[cite: 4]
     if not cursor.fetchone():
         conn.close()
-        return jsonify({"error": "Task not found"}), 404
+        return jsonify({"error": "Task not found"}), 404[cite: 4]
 
-    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))[cite: 4]
     conn.commit()
     conn.close()
 
-    return jsonify({"message": "Status updated successfully"}), 200
+    return jsonify({"message": "Status updated successfully"}), 200[cite: 4]
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))[cite: 4]
+    app.run(host="0.0.0.0", port=port)[cite: 4]

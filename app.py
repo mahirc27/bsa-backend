@@ -10,10 +10,10 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE = "tasks.db"
-PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")[cite: 4]
+PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
 EMAIL_RELAY_URL = os.environ.get("EMAIL_RELAY_URL")
 
-# Executive member email lookup registry[cite: 4]
+# Executive member email lookup registry
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
@@ -99,7 +99,7 @@ https://mahirc27.github.io/bsa-task-tracker/
         print(f"Apps Script relay error: {e}", flush=True)
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
-    # Runs on a daemon background thread so the HTTP request completes instantaneously[cite: 4]
+    # Runs on a daemon background thread so the HTTP request completes instantaneously
     threading.Thread(
         target=_dispatch_relay_email,
         args=(assignee_name, task_title, department, deadline),
@@ -115,22 +115,22 @@ def health():
 # --- Task Endpoints ---
 @app.route("/tasks", methods=["GET"])
 def get_tasks():
-    incoming_pin = request.args.get("pin")[cite: 4]
-    department = request.args.get("department")[cite: 4]
+    incoming_pin = request.args.get("pin")
+    department = request.args.get("department")
 
     if incoming_pin is not None and incoming_pin.strip() != PRESIDENT_PIN.strip():
-        return jsonify({"error": "Unauthorized"}), 401[cite: 4]
+        return jsonify({"error": "Unauthorized"}), 401
 
     if not department or department == "All":
         if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
-            return jsonify({"error": "Unauthorized"}), 401[cite: 4]
+            return jsonify({"error": "Unauthorized"}), 401
 
     conn = get_db_connection()
     cursor = conn.cursor()
     if department and department != "All":
-        cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))[cite: 4]
+        cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))
     else:
-        cursor.execute("SELECT * FROM tasks")[cite: 4]
+        cursor.execute("SELECT * FROM tasks")
     rows = cursor.fetchall()
     conn.close()
 
@@ -144,59 +144,59 @@ def get_tasks():
             "deadline": row["deadline"],
         }
         for row in rows
-    ][cite: 2, 3, 4]
-    return jsonify(tasks), 200[cite: 4]
+    ]
+    return jsonify(tasks), 200
 
 @app.route("/tasks", methods=["POST"])
 def create_task():
     data = request.get_json() or {}
-    incoming_pin = data.get("pin")[cite: 4]
+    incoming_pin = data.get("pin")
 
     if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
-        return jsonify({"error": "Unauthorized"}), 401[cite: 4]
+        return jsonify({"error": "Unauthorized"}), 401
 
-    title = data.get("title")[cite: 4]
-    assignee = data.get("assignee")[cite: 4]
-    department = data.get("department")[cite: 4]
-    deadline = data.get("deadline")[cite: 4]
+    title = data.get("title")
+    assignee = data.get("assignee")
+    department = data.get("department")
+    deadline = data.get("deadline")
 
     if not title or not assignee or not department:
-        return jsonify({"error": "Missing required fields"}), 400[cite: 4]
+        return jsonify({"error": "Missing required fields"}), 400
 
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO tasks (title, assignee, department, status, deadline) VALUES (?, ?, ?, ?, ?)",
         (title.strip(), assignee.strip(), department.strip(), "Pending", deadline.strip() if deadline else None),
-    )[cite: 4]
+    )
     conn.commit()
     new_id = cursor.lastrowid
     conn.close()
 
-    send_task_notification(assignee, title, department, deadline)[cite: 4]
-    return jsonify({"message": "Task created", "id": new_id}), 201[cite: 4]
+    send_task_notification(assignee, title, department, deadline)
+    return jsonify({"message": "Task created", "id": new_id}), 201
 
 @app.route("/tasks/<int:task_id>", methods=["PATCH"])
 def update_task_status(task_id):
     data = request.get_json() or {}
-    status = data.get("status")[cite: 4]
+    status = data.get("status")
 
     if not status:
-        return jsonify({"error": "Status is required"}), 400[cite: 4]
+        return jsonify({"error": "Status is required"}), 400
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))[cite: 4]
+    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
     if not cursor.fetchone():
         conn.close()
-        return jsonify({"error": "Task not found"}), 404[cite: 4]
+        return jsonify({"error": "Task not found"}), 404
 
-    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))[cite: 4]
+    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
     conn.commit()
     conn.close()
 
-    return jsonify({"message": "Status updated successfully"}), 200[cite: 4]
+    return jsonify({"message": "Status updated successfully"}), 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))[cite: 4]
-    app.run(host="0.0.0.0", port=port)[cite: 4]
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

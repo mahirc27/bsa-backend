@@ -8,7 +8,6 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE = os.path.join(os.path.dirname(__file__), 'tasks.db')
-# Strip any stray quotes or spaces from the env var
 PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234").strip().strip('"').strip("'")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
@@ -57,7 +56,6 @@ def send_task_notification(assignee_name, task_title, department, deadline=None)
         return
 
     deadline_text = f"Due Date: {deadline}\n" if deadline else ""
-
     email_body = f"""Hi {assignee_name},
 
 You have been assigned a new task on the BSA Task Tracker:
@@ -104,16 +102,15 @@ def get_tasks():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    if incoming_pin == PRESIDENT_PIN:
-        if dept and dept != 'All':
-            cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
-        else:
-            cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
-    elif dept and dept != 'All':
-        cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
+    # If asking for all tasks, require the valid president PIN
+    if not dept or dept == 'All':
+        if incoming_pin != PRESIDENT_PIN:
+            conn.close()
+            return jsonify({"error": "Unauthorized"}), 401
+        cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
     else:
-        conn.close()
-        return jsonify({"error": "Unauthorized"}), 401
+        # Department lead looking at their own column
+        cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
 
     rows = cursor.fetchall()
     conn.close()
@@ -137,7 +134,7 @@ def create_task():
     data = request.get_json() or {}
     incoming_pin = str(data.get('pin', '')).strip()
 
-    print(f"POST /tasks auth check -> Received PIN: '{incoming_pin}' | Expected: '{PRESIDENT_PIN}'", flush=True)
+    print(f"Auth check -> Incoming: '{incoming_pin}' | Expected: '{PRESIDENT_PIN}'", flush=True)
 
     if incoming_pin != PRESIDENT_PIN:
         return jsonify({"error": "Unauthorized"}), 401
@@ -160,7 +157,6 @@ def create_task():
     conn.close()
 
     send_task_notification(assignee, title, department, deadline)
-
     return jsonify({"message": "Task created successfully"}), 201
 
 @app.route('/tasks/<int:task_id>', methods=['PATCH', 'PUT'])

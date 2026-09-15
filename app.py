@@ -8,14 +8,14 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE = os.path.join(os.path.dirname(__file__), 'tasks.db')
-PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
+# Strip any stray quotes or spaces from the env var
+PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234").strip().strip('"').strip("'")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
-# Map executive/team member names to their emails.
-# You can add or modify names and university/club emails here:
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
-    # "Sarah": "sarah@example.com",
+    "1": "mahirasif2704@gmail.com",
+    "test": "mahirasif2704@gmail.com",
 }
 
 def get_db_connection():
@@ -48,12 +48,12 @@ init_db()
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
     if not RESEND_API_KEY:
-        print("Skipping email: RESEND_API_KEY not configured.")
+        print("Skipping email: RESEND_API_KEY not configured.", flush=True)
         return
 
     recipient_email = EXEC_ROSTER.get(assignee_name)
     if not recipient_email:
-        print(f"Skipping email: No registered email address found for '{assignee_name}'.")
+        print(f"Skipping email: No registered email address found for '{assignee_name}'.", flush=True)
         return
 
     deadline_text = f"Due Date: {deadline}\n" if deadline else ""
@@ -88,8 +88,7 @@ https://mahirc27.github.io/bsa-task-tracker/
             json=payload,
             timeout=5,
         )
-        if response.status_code not in (200, 201):
-            print(f"Failed to send email via Resend: {response.text}")
+        print(f"Resend Response ({response.status_code}): {response.text}", flush=True)
     except Exception as e:
         print(f"Email request failed: {e}", flush=True)
 
@@ -100,15 +99,21 @@ def health():
 @app.route('/tasks', methods=['GET'])
 def get_tasks():
     dept = request.args.get('department')
-    pin = request.args.get('pin')
+    incoming_pin = str(request.args.get('pin', '')).strip()
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    if pin == PRESIDENT_PIN or not dept or dept == 'All':
-        cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
-    else:
+    if incoming_pin == PRESIDENT_PIN:
+        if dept and dept != 'All':
+            cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
+        else:
+            cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
+    elif dept and dept != 'All':
         cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
+    else:
+        conn.close()
+        return jsonify({"error": "Unauthorized"}), 401
 
     rows = cursor.fetchall()
     conn.close()
@@ -130,7 +135,11 @@ def get_tasks():
 @app.route('/tasks', methods=['POST'])
 def create_task():
     data = request.get_json() or {}
-    if data.get('pin') != PRESIDENT_PIN:
+    incoming_pin = str(data.get('pin', '')).strip()
+
+    print(f"POST /tasks auth check -> Received PIN: '{incoming_pin}' | Expected: '{PRESIDENT_PIN}'", flush=True)
+
+    if incoming_pin != PRESIDENT_PIN:
         return jsonify({"error": "Unauthorized"}), 401
 
     title = data.get('title')
@@ -150,7 +159,6 @@ def create_task():
     conn.commit()
     conn.close()
 
-    # Trigger outbound email notification
     send_task_notification(assignee, title, department, deadline)
 
     return jsonify({"message": "Task created successfully"}), 201

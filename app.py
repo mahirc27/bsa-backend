@@ -18,7 +18,7 @@ EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
-    # Add any executive board members here:
+    # Add additional executive members here:
     # "Name": "user@example.com",
 }
 
@@ -46,7 +46,7 @@ def init_db():
 init_db()
 
 def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
-    """Sends notification via Google Apps Script Web App without external packages."""
+    """Sends notification via Google Apps Script Web App without encoding corruption."""
     if not EMAIL_RELAY_URL:
         print("Skipping email: EMAIL_RELAY_URL is not configured in Render environment.", flush=True)
         return
@@ -76,19 +76,20 @@ https://mahirc27.github.io/bsa-task-tracker/
 — BSA Executive Board
 """
 
+    # ensure_ascii=False forces raw UTF-8 output instead of \u surrogate escape pairs
     payload = json.dumps({
         "to": recipient_email,
         "subject": f"📌 New Task Assigned: {task_title}",
         "body": email_body,
-    }).encode("utf-8")
+    }, ensure_ascii=False).encode("utf-8")
 
     try:
         req = urllib.request.Request(
             EMAIL_RELAY_URL.strip(),
             data=payload,
             headers={
-                "Content-Type": "application/json",
-                # Standard browser User-Agent prevents Google's 403 Forbidden block
+                # Explicit charset prevents Google from interpreting multibyte emoji characters as fallback question marks
+                "Content-Type": "application/json; charset=utf-8",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
             method="POST",
@@ -100,7 +101,7 @@ https://mahirc27.github.io/bsa-task-tracker/
         print(f"Apps Script relay error: {e}", flush=True)
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
-    # Runs on a daemon background thread so the HTTP response returns in <50ms
+    # Runs on a daemon background thread so task creation returns in <50ms without UI lag
     threading.Thread(
         target=_dispatch_relay_email,
         args=(assignee_name, task_title, department, deadline),

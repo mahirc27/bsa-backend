@@ -1,20 +1,25 @@
+import os
+import sqlite3
+import smtplib
+from email.mime.text import MIMEText
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import os
-import requests
 
 app = Flask(__name__)
 CORS(app)
 
-DATABASE = os.path.join(os.path.dirname(__file__), 'tasks.db')
-PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234").strip().strip('"').strip("'")
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+DATABASE = "tasks.db"
+PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 
+# Map exact or case-insensitive assignee names to their target emails
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
+    # Add additional executive members here:
+    # "Name": "user@domain.com",
 }
 
 def get_db_connection():
@@ -25,32 +30,35 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             assignee TEXT NOT NULL,
             department TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'Pending',
-            deadline TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            status TEXT DEFAULT 'Pending',
+            deadline TEXT
         )
-    ''')
-    try:
-        cursor.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
-    except Exception:
-        pass
+    """)
     conn.commit()
     conn.close()
 
+# Initialize database tables on worker startup
 init_db()
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
-    if not RESEND_API_KEY:
-        print("Skipping email: RESEND_API_KEY not configured.", flush=True)
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        print("Skipping email: GMAIL_ADDRESS or GMAIL_APP_PASSWORD not set in environment.", flush=True)
         return
 
-    recipient_email = EXEC_ROSTER.get(assignee_name)
+    # Find recipient email with case-insensitive fallback[cite: 4]
+    recipient_email = EXEC_ROSTER.get(assignee_name.strip())
+    if not recipient_email:
+        for name, email in EXEC_ROSTER.items():
+            if name.lower() == assignee_name.strip().lower():
+                recipient_email = email
+                break
+
     if not recipient_email:
         print(f"Skipping email: No registered email address found for '{assignee_name}'.", flush=True)
         return
@@ -63,86 +71,80 @@ You have been assigned a new task on the BSA Task Tracker:
 📌 Task: {task_title}
 🏢 Department: {department}
 {deadline_text}
-You can review and update your task status here:
+You can view and update your tasks here:
 https://mahirc27.github.io/bsa-task-tracker/
 
 — BSA Executive Board
 """
 
-    payload = {
-        "from": "BSA Tasks <onboarding@resend.dev>",
-        "to": [recipient_email],
-        "subject": f"📌 New Task Assigned: {task_title}",
-        "text": email_body,
-    }
+    msg = MIMEText(email_body)
+    msg["Subject"] = f"📌 New Task Assigned: {task_title}"
+    msg["From"] = f"BSA Tasks <{GMAIL_ADDRESS}>"
+    msg["To"] = recipient_email
 
     try:
-        response = requests.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=5,
-        )
-        print(f"Resend Response ({response.status_code}): {response.text}", flush=True)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        print(f"Email sent successfully to {recipient_email} via Gmail SMTP.", flush=True)
     except Exception as e:
-        print(f"Email request failed: {e}", flush=True)
+        print(f"Gmail SMTP error: {e}", flush=True)
 
-@app.route('/health', methods=['GET'])
+@app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "healthy"}), 200
+    return jsonify({"status": "ok", "message": "BSA Tasks API is online"}), 200
 
-@app.route('/tasks', methods=['GET'])
+@app.route("/tasks", methods=["GET"])
 def get_tasks():
-    dept = request.args.get('department')
-    incoming_pin = str(request.args.get('pin', '')).strip()
+    incoming_pin = request.args.get("pin")
+    department = request.args.get("department")
+
+    # If a PIN was provided in the query string, validate it
+    if incoming_pin is not None:
+        if incoming_pin.strip() != PRESIDENT_PIN:
+            return jsonify({"error": "Unauthorized"}), 401
+
+    # Restrict unrestricted all-task queries to authenticated President PIN requests
+    if not department or department == "All":
+        if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN:
+            return jsonify({"error": "Unauthorized"}), 401
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # If asking for all tasks, require the valid president PIN
-    if not dept or dept == 'All':
-        if incoming_pin != PRESIDENT_PIN:
-            conn.close()
-            return jsonify({"error": "Unauthorized"}), 401
-        cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
+    if department and department != "All":
+        cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))
     else:
-        # Department lead looking at their own column
-        cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
+        cursor.execute("SELECT * FROM tasks")
 
     rows = cursor.fetchall()
     conn.close()
 
     tasks = [
         {
-            "id": r["id"],
-            "title": r["title"],
-            "assignee": r["assignee"],
-            "department": r["department"],
-            "status": r["status"],
-            "deadline": r["deadline"] if "deadline" in r.keys() else None,
-            "created_at": r["created_at"],
+            "id": row["id"],
+            "title": row["title"],
+            "assignee": row["assignee"],
+            "department": row["department"],
+            "status": row["status"],
+            "deadline": row["deadline"],
         }
-        for r in rows
+        for row in rows
     ]
     return jsonify(tasks), 200
 
-@app.route('/tasks', methods=['POST'])
+@app.route("/tasks", methods=["POST"])
 def create_task():
     data = request.get_json() or {}
-    incoming_pin = str(data.get('pin', '')).strip()
+    incoming_pin = data.get("pin")
 
-    print(f"Auth check -> Incoming: '{incoming_pin}' | Expected: '{PRESIDENT_PIN}'", flush=True)
-
-    if incoming_pin != PRESIDENT_PIN:
+    if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN:
         return jsonify({"error": "Unauthorized"}), 401
 
-    title = data.get('title')
-    assignee = data.get('assignee')
-    department = data.get('department')
-    deadline = data.get('deadline')
+    title = data.get("title")
+    assignee = data.get("assignee")
+    department = data.get("department")
+    deadline = data.get("deadline")
 
     if not title or not assignee or not department:
         return jsonify({"error": "Missing required fields"}), 400
@@ -150,30 +152,37 @@ def create_task():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        'INSERT INTO tasks (title, assignee, department, status, deadline) VALUES (?, ?, ?, ?, ?)',
-        (title, assignee, department, 'Pending', deadline),
+        "INSERT INTO tasks (title, assignee, department, status, deadline) VALUES (?, ?, ?, ?, ?)",
+        (title.strip(), assignee.strip(), department.strip(), "Pending", deadline.strip() if deadline else None),
     )
     conn.commit()
+    new_id = cursor.lastrowid
     conn.close()
 
     send_task_notification(assignee, title, department, deadline)
-    return jsonify({"message": "Task created successfully"}), 201
+    return jsonify({"message": "Task created", "id": new_id}), 201
 
-@app.route('/tasks/<int:task_id>', methods=['PATCH', 'PUT'])
+@app.route("/tasks/<int:task_id>", methods=["PATCH"])
 def update_task_status(task_id):
     data = request.get_json() or {}
-    new_status = data.get('status')
+    status = data.get("status")
 
-    if new_status not in ['Pending', 'In Progress', 'Done']:
-        return jsonify({"error": "Invalid status"}), 400
+    if not status:
+        return jsonify({"error": "Status is required"}), 400
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('UPDATE tasks SET status = ? WHERE id = ?', (new_status, task_id))
+    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return jsonify({"error": "Task not found"}), 404
+
+    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
     conn.commit()
     conn.close()
 
     return jsonify({"message": "Status updated successfully"}), 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

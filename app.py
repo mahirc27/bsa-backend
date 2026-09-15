@@ -1,7 +1,8 @@
 import os
 import sqlite3
-import smtplib
-from email.mime.text import MIMEText
+import json
+import threading
+import urllib.request
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -10,16 +11,15 @@ CORS(app)
 
 DATABASE = "tasks.db"
 PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
-GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+EMAIL_RELAY_URL = os.environ.get("EMAIL_RELAY_URL")
 
-# Map exact or case-insensitive assignee names to their target emails
+# Member email registry (case-insensitive matching applied automatically)
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
-    # Add additional executive members here:
-    # "Name": "user@domain.com",
+    # Add your executive members here:
+    # "Amani": "amani@example.com",
 }
 
 def get_db_connection():
@@ -43,15 +43,15 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialize database tables on worker startup
 init_db()
 
-def send_task_notification(assignee_name, task_title, department, deadline=None):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        print("Skipping email: GMAIL_ADDRESS or GMAIL_APP_PASSWORD not set in environment.", flush=True)
+def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
+    """Dispatches the notification via Google Apps Script HTTPS webhook."""
+    if not EMAIL_RELAY_URL:
+        print("Skipping email: EMAIL_RELAY_URL is not set in Render environment.", flush=True)
         return
 
-    # Find recipient email with case-insensitive fallback[cite: 4]
+    # Case-insensitive assignee lookup
     recipient_email = EXEC_ROSTER.get(assignee_name.strip())
     if not recipient_email:
         for name, email in EXEC_ROSTER.items():
@@ -60,63 +60,75 @@ def send_task_notification(assignee_name, task_title, department, deadline=None)
                 break
 
     if not recipient_email:
-        print(f"Skipping email: No registered email address found for '{assignee_name}'.", flush=True)
+        print(f"Skipping email: '{assignee_name}' is not registered in EXEC_ROSTER.", flush=True)
         return
 
-    deadline_text = f"Due Date: {deadline}\n" if deadline else ""
+    deadline_line = f"Due Date: {deadline}\n" if deadline else ""
     email_body = f"""Hi {assignee_name},
 
 You have been assigned a new task on the BSA Task Tracker:
 
 📌 Task: {task_title}
 🏢 Department: {department}
-{deadline_text}
-You can view and update your tasks here:
+{deadline_line}
+Review and update your tasks here:
 https://mahirc27.github.io/bsa-task-tracker/
 
 — BSA Executive Board
 """
 
-    msg = MIMEText(email_body)
-    msg["Subject"] = f"📌 New Task Assigned: {task_title}"
-    msg["From"] = f"BSA Tasks <{GMAIL_ADDRESS}>"
-    msg["To"] = recipient_email
+    payload = json.dumps({
+        "to": recipient_email,
+        "subject": f"📌 New Task Assigned: {task_title}",
+        "body": email_body,
+    }).encode("utf-8")
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.send_message(msg)
-        print(f"Email sent successfully to {recipient_email} via Gmail SMTP.", flush=True)
+        req = urllib.request.Request(
+            EMAIL_RELAY_URL.strip(),
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            resp_body = response.read().decode("utf-8")
+            print(f"Email relay response ({response.status}): {resp_body}", flush=True)
     except Exception as e:
-        print(f"Gmail SMTP error: {e}", flush=True)
+        print(f"Apps Script relay error: {e}", flush=True)
 
+def send_task_notification(assignee_name, task_title, department, deadline=None):
+    # Non-blocking execution prevents UI delays on Flutter web
+    threading.Thread(
+        target=_dispatch_relay_email,
+        args=(assignee_name, task_title, department, deadline),
+        daemon=True,
+    ).start()
+
+# --- Health Check Endpoints ---
 @app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "message": "BSA Tasks API is online"}), 200
 
+# --- Task Endpoints ---
 @app.route("/tasks", methods=["GET"])
 def get_tasks():
     incoming_pin = request.args.get("pin")
     department = request.args.get("department")
 
-    # If a PIN was provided in the query string, validate it
-    if incoming_pin is not None:
-        if incoming_pin.strip() != PRESIDENT_PIN:
-            return jsonify({"error": "Unauthorized"}), 401
+    if incoming_pin is not None and incoming_pin.strip() != PRESIDENT_PIN.strip():
+        return jsonify({"error": "Unauthorized"}), 401
 
-    # Restrict unrestricted all-task queries to authenticated President PIN requests
     if not department or department == "All":
-        if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN:
+        if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
             return jsonify({"error": "Unauthorized"}), 401
 
     conn = get_db_connection()
     cursor = conn.cursor()
-
     if department and department != "All":
         cursor.execute("SELECT * FROM tasks WHERE department = ?", (department,))
     else:
         cursor.execute("SELECT * FROM tasks")
-
     rows = cursor.fetchall()
     conn.close()
 
@@ -138,7 +150,7 @@ def create_task():
     data = request.get_json() or {}
     incoming_pin = data.get("pin")
 
-    if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN:
+    if not incoming_pin or incoming_pin.strip() != PRESIDENT_PIN.strip():
         return jsonify({"error": "Unauthorized"}), 401
 
     title = data.get("title")

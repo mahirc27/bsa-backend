@@ -1,106 +1,175 @@
-import os
-from functools import wraps
 from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+import sqlite3
+import os
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
-ADMIN_PIN = os.environ.get('ADMIN_PIN', '1234')
+DATABASE = os.path.join(os.path.dirname(__file__), 'tasks.db')
+PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', f"sqlite:///{os.path.join(BASE_DIR, 'tasks.db')}"
-)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Map executive/team member names to their emails.
+# You can add or modify names and university/club emails here:
+EXEC_ROSTER = {
+    "Mahir": "mahirasif2704@gmail.com",
+    # "Sarah": "sarah@example.com",
+}
 
-db = SQLAlchemy(app)
+def get_db_connection():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-class Task(db.Model):
-    __tablename__ = 'tasks'
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(255), nullable=False)
-    assignee = db.Column(db.String(100), nullable=False)
-    department = db.Column(db.String(50), nullable=False)
-    status = db.Column(db.String(20), nullable=False, default='Pending')
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            assignee TEXT NOT NULL,
+            department TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Pending',
+            deadline TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    try:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'title': self.title,
-            'assignee': self.assignee,
-            'department': self.department,
-            'status': self.status
-        }
+init_db()
 
-with app.app_context():
-    db.create_all()
+def send_task_notification(assignee_name, task_title, department, deadline=None):
+    if not RESEND_API_KEY:
+        print("Skipping email: RESEND_API_KEY not configured.")
+        return
 
-def require_pin(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        pin = request.headers.get('X-Admin-PIN')
-        if not pin or pin != ADMIN_PIN:
-            return jsonify({'error': 'Unauthorized: Invalid or missing PIN'}), 401
-        return f(*args, **kwargs)
-    return decorated
+    recipient_email = EXEC_ROSTER.get(assignee_name)
+    if not recipient_email:
+        print(f"Skipping email: No registered email address found for '{assignee_name}'.")
+        return
+
+    deadline_text = f"Due Date: {deadline}\n" if deadline else ""
+
+    email_body = f"""Hi {assignee_name},
+
+You have been assigned a new task on the BSA Task Tracker:
+
+📌 Task: {task_title}
+🏢 Department: {department}
+{deadline_text}
+You can review and update your task status here:
+https://mahirc27.github.io/bsa-task-tracker/
+
+— BSA Executive Board
+"""
+
+    payload = {
+        "from": "BSA Tasks <onboarding@resend.dev>",
+        "to": [recipient_email],
+        "subject": f"📌 New Task Assigned: {task_title}",
+        "text": email_body,
+    }
+
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=5,
+        )
+        if response.status_code not in (200, 201):
+            print(f"Failed to send email via Resend: {response.text}")
+    except Exception as e:
+        print(f"Email request failed: {e}")
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "healthy"}), 200
 
 @app.route('/tasks', methods=['GET'])
 def get_tasks():
     dept = request.args.get('department')
-    pin = request.headers.get('X-Admin-PIN')
+    pin = request.args.get('pin')
 
-    if not dept:
-        if pin != ADMIN_PIN:
-            return jsonify({'error': 'Unauthorized'}), 401
-        tasks = Task.query.order_by(Task.id.desc()).all()
-        return jsonify([task.to_dict() for task in tasks]), 200
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    tasks = Task.query.filter_by(department=dept).order_by(Task.id.desc()).all()
-    return jsonify([task.to_dict() for task in tasks]), 200
+    if pin == PRESIDENT_PIN or not dept or dept == 'All':
+        cursor.execute('SELECT * FROM tasks ORDER BY id DESC')
+    else:
+        cursor.execute('SELECT * FROM tasks WHERE department = ? ORDER BY id DESC', (dept,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    tasks = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "assignee": r["assignee"],
+            "department": r["department"],
+            "status": r["status"],
+            "deadline": r["deadline"] if "deadline" in r.keys() else None,
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+    return jsonify(tasks), 200
 
 @app.route('/tasks', methods=['POST'])
-@require_pin
 def create_task():
     data = request.get_json() or {}
-    title = data.get('title', '').strip()
-    assignee = data.get('assignee', '').strip()
-    department = data.get('department', '').strip()
+    if data.get('pin') != PRESIDENT_PIN:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    title = data.get('title')
+    assignee = data.get('assignee')
+    department = data.get('department')
+    deadline = data.get('deadline')
 
     if not title or not assignee or not department:
-        return jsonify({'error': 'Title, assignee, and department are required.'}), 400
+        return jsonify({"error": "Missing required fields"}), 400
 
-    task = Task(title=title, assignee=assignee, department=department, status='Pending')
-    db.session.add(task)
-    db.session.commit()
-    return jsonify(task.to_dict()), 201
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO tasks (title, assignee, department, status, deadline) VALUES (?, ?, ?, ?, ?)',
+        (title, assignee, department, 'Pending', deadline),
+    )
+    conn.commit()
+    conn.close()
 
-@app.route('/tasks/<int:task_id>', methods=['PATCH'])
+    # Trigger outbound email notification
+    send_task_notification(assignee, title, department, deadline)
+
+    return jsonify({"message": "Task created successfully"}), 201
+
+@app.route('/tasks/<int:task_id>', methods=['PATCH', 'PUT'])
 def update_task_status(task_id):
-    task = Task.query.get_or_404(task_id)
     data = request.get_json() or {}
     new_status = data.get('status')
-    user_name = data.get('user_name', '').strip()
-    pin = request.headers.get('X-Admin-PIN')
 
-    valid_statuses = {'Pending', 'In Progress', 'Done'}
-    if new_status not in valid_statuses:
-        return jsonify({'error': f'Invalid status. Allowed: {valid_statuses}'}), 400
+    if new_status not in ['Pending', 'In Progress', 'Done']:
+        return jsonify({"error": "Invalid status"}), 400
 
-    is_president = (pin == ADMIN_PIN)
-    is_assignee = (user_name.lower() == task.assignee.lower())
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE tasks SET status = ? WHERE id = ?', (new_status, task_id))
+    conn.commit()
+    conn.close()
 
-    if not is_president and not is_assignee:
-        return jsonify({'error': 'Forbidden: You can only update tasks assigned to you.'}), 403
-
-    task.status = new_status
-    db.session.commit()
-    return jsonify(task.to_dict()), 200
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    return "OK", 200
+    return jsonify({"message": "Status updated successfully"}), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

@@ -91,7 +91,7 @@ https://mahirc27.github.io/bsa-task-tracker/
         if response.status_code not in (200, 201):
             print(f"Failed to send email via Resend: {response.text}")
     except Exception as e:
-        print(f"Email request failed: {e}")
+        print(f"Email request failed: {e}", flush=True)
 
 @app.route('/health', methods=['GET'])
 def health():

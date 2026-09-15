@@ -13,13 +13,13 @@ DATABASE = "tasks.db"
 PRESIDENT_PIN = os.environ.get("PRESIDENT_PIN", "1234")
 EMAIL_RELAY_URL = os.environ.get("EMAIL_RELAY_URL")
 
-# Member email registry (case-insensitive matching applied automatically)
+# Team email directory (case-insensitive lookup enabled)
 EXEC_ROSTER = {
     "Mahir": "mahirasif2704@gmail.com",
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
-    # Add your executive members here:
-    # "Amani": "amani@example.com",
+    # Add any executive board members here:
+    # "Name": "user@example.com",
 }
 
 def get_db_connection():
@@ -46,12 +46,11 @@ def init_db():
 init_db()
 
 def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
-    """Dispatches the notification via Google Apps Script HTTPS webhook."""
+    """Sends notification via Google Apps Script Web App without external packages."""
     if not EMAIL_RELAY_URL:
-        print("Skipping email: EMAIL_RELAY_URL is not set in Render environment.", flush=True)
+        print("Skipping email: EMAIL_RELAY_URL is not configured in Render environment.", flush=True)
         return
 
-    # Case-insensitive assignee lookup
     recipient_email = EXEC_ROSTER.get(assignee_name.strip())
     if not recipient_email:
         for name, email in EXEC_ROSTER.items():
@@ -63,14 +62,14 @@ def _dispatch_relay_email(assignee_name, task_title, department, deadline=None):
         print(f"Skipping email: '{assignee_name}' is not registered in EXEC_ROSTER.", flush=True)
         return
 
-    deadline_line = f"Due Date: {deadline}\n" if deadline else ""
+    deadline_text = f"Due Date: {deadline}\n" if deadline else ""
     email_body = f"""Hi {assignee_name},
 
 You have been assigned a new task on the BSA Task Tracker:
 
 📌 Task: {task_title}
 🏢 Department: {department}
-{deadline_line}
+{deadline_text}
 Review and update your tasks here:
 https://mahirc27.github.io/bsa-task-tracker/
 
@@ -87,17 +86,21 @@ https://mahirc27.github.io/bsa-task-tracker/
         req = urllib.request.Request(
             EMAIL_RELAY_URL.strip(),
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Standard browser User-Agent prevents Google's 403 Forbidden block
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as response:
-            resp_body = response.read().decode("utf-8")
-            print(f"Email relay response ({response.status}): {resp_body}", flush=True)
+            body = response.read().decode("utf-8")
+            print(f"Email relay response ({response.status}): {body}", flush=True)
     except Exception as e:
         print(f"Apps Script relay error: {e}", flush=True)
 
 def send_task_notification(assignee_name, task_title, department, deadline=None):
-    # Non-blocking execution prevents UI delays on Flutter web
+    # Runs on a daemon background thread so the HTTP response returns in <50ms
     threading.Thread(
         target=_dispatch_relay_email,
         args=(assignee_name, task_title, department, deadline),

@@ -19,7 +19,7 @@ EXEC_ROSTER = {
     "1": "mahirasif2704@gmail.com",
     "test": "mahirasif2704@gmail.com",
     "Amani": "amanichowdhury08@gmail.com",
-    "mahir's wife": "amanichowdhury08@gmail.com"
+    "mahir's wife": "amanichowdhury08@gmail.com",
     # "Name": "user@example.com",
 }
 
